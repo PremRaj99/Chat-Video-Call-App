@@ -1,10 +1,10 @@
 import { WebSocket } from "ws";
-import { MESSAGE, PARTNER_LEFT } from "../constant";
+import { MESSAGE, PARTNER_LEFT, OFFER, SEND_OFFER, ANSWER } from "../constant";
 import { User } from "./RoomManager";
 
 // Room.ts
 export class Room {
-    constructor(private user1: User, private user2: User) {}
+    constructor(private user1: User, private user2: User) { }
 
     public containsUser(socket: WebSocket): boolean {
         return this.user1.socket === socket || this.user2.socket === socket;
@@ -29,6 +29,18 @@ export class Room {
     public sendMessageToPartner(sender: User, message: string) {
         const partner = this.otherUser(sender);
         partner.socket.send(JSON.stringify({ type: MESSAGE, content: message }));
+    }
+
+    public requestSDP() {
+        const user1 = this.user1;
+        const user2 = this.user2;
+        user1.socket.send(JSON.stringify({ type: SEND_OFFER }));
+        user2.socket.send(JSON.stringify({ type: SEND_OFFER }));
+    }
+
+    public sendSDPToPartner(sender: User, sdp: any) {
+        const partner = this.otherUser(sender);
+        partner.socket.send(JSON.stringify({ type: ANSWER, sdp }));
     }
 
     public destroy() {

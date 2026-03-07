@@ -1,6 +1,6 @@
 import { WebSocket } from "ws";
 import { Room } from "./Room";
-import { EXIT, INIT, JOINED, LEAVE, MATCHED, MESSAGE, NEXT } from "../constant";
+import { EXIT, INIT, JOINED, LEAVE, MATCHED, MESSAGE, NEXT, OFFER, SEND_OFFER, VIDEO_CALL } from "../constant";
 
 // RoomManager.ts (Optimized Logic)
 
@@ -48,6 +48,14 @@ export class RoomManager {
                     if (room) room.sendMessageToPartner(user, message.content);
                     break;
 
+                case VIDEO_CALL:
+                    if (room) room.requestSDP();
+                    break;
+
+                case OFFER:
+                    if (room) room.sendSDPToPartner(user, message.sdp);
+                    break;
+
                 case NEXT:
                     if (room) {
                         const partner = room.otherUser(user);
@@ -77,14 +85,14 @@ export class RoomManager {
     public removeUser(socket: WebSocket): void {
         // 1. Remove from waiting queue
         this.users = this.users.filter(u => u.socket !== socket);
-        
+
         // 2. Remove from active rooms
         const room = this.rooms.find(r => r.containsUser(socket));
         if (room) {
             const partner = room.otherUserBySocket(socket);
             this.rooms = this.rooms.filter(r => r !== room);
             room.destroy();
-            
+
             // Optional: Put the abandoned partner back in the queue
             if (partner) {
                 this.users.push(partner);
@@ -96,7 +104,7 @@ export class RoomManager {
     private tryCreateRoom(): void {
         // Only match users who have provided a name (INIT completed)
         const eligibleUsers = this.users.filter(u => u.name !== "");
-        
+
         while (eligibleUsers.length >= 2) {
             const u1 = eligibleUsers.shift()!;
             const u2 = eligibleUsers.shift()!;
