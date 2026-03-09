@@ -1,17 +1,16 @@
 import { WebSocket } from "ws";
+import { EXIT, ICE_CANDIDATE, INIT, JOINED, LEAVE, MATCHED, MESSAGE, NEXT, OFFER, ANSWER, VIDEO_CALL_ACCEPTED, VIDEO_CALL_REJECTED, VIDEO_CALL_REQUEST, VIDEO_READY } from "../constant";
 import { Room } from "./Room";
-import { EXIT, INIT, JOINED, LEAVE, MATCHED, MESSAGE, NEXT, OFFER, SEND_OFFER, VIDEO_CALL } from "../constant";
-
-// RoomManager.ts (Optimized Logic)
 
 export interface User {
     socket: WebSocket;
     name: string;
+    videoReady: boolean;
 }
 
 export class RoomManager {
     private rooms: Room[];
-    private users: User[]; // This is the WAITING QUEUE
+    private users: User[];
 
     constructor() {
         this.rooms = [];
@@ -26,11 +25,9 @@ export class RoomManager {
                 message = JSON.parse(dataStr);
             } catch (e) { return; }
 
-            // Find user in EITHER the queue OR a room
             let user = this.users.find(u => u.socket === socket);
             let room = this.rooms.find(r => r.containsUser(socket));
 
-            // If user isn't in the queue, check if they are in a room
             if (!user && room) {
                 user = room.getUserBySocket(socket)!;
             }
@@ -40,7 +37,6 @@ export class RoomManager {
             switch (message.type) {
                 case INIT:
                     user.name = message.name;
-                    // Only try to match after name is set
                     this.tryCreateRoom();
                     break;
 
@@ -48,21 +44,56 @@ export class RoomManager {
                     if (room) room.sendMessageToPartner(user, message.content);
                     break;
 
-                case VIDEO_CALL:
-                    if (room) room.requestSDP();
+                case VIDEO_CALL_REQUEST:
+                    if (room) {
+                        const partner = room.otherUser(user);
+                        partner.socket.send(JSON.stringify({ type: VIDEO_CALL_REQUEST }));
+                    }
                     break;
 
+                case VIDEO_CALL_ACCEPTED:
+                    if (room) {
+                        const partner = room.otherUser(user);
+                        partner.socket.send(JSON.stringify({ type: VIDEO_CALL_ACCEPTED }));
+                        // FIX: Removed room.requestSDP() from here. We must wait for them to load the video page.
+                    }
+                    break;
+
+                case VIDEO_CALL_REJECTED:
+                    if (room) {
+                        const partner = room.otherUser(user);
+                        partner.socket.send(JSON.stringify({ type: VIDEO_CALL_REJECTED }));
+                    }
+                    break;
+
+                case VIDEO_READY:
+                    if (room) {
+                        user.videoReady = true;
+                        const partner = room.otherUser(user);
+
+                        if (partner.videoReady) {
+                            room.initiateWebRTC();
+                        }
+                    }
+                    break;
                 case OFFER:
-                    if (room) room.sendSDPToPartner(user, message.sdp);
+                case ANSWER:
+                    if (room) room.sendSDPToPartner(user, message);
+                    break;
+
+                case ICE_CANDIDATE:
+                    if (room) room.sendIceCandidateToPartner(user, message.candidate);
                     break;
 
                 case NEXT:
                     if (room) {
                         const partner = room.otherUser(user);
                         this.rooms = this.rooms.filter(r => r !== room);
-                        room.destroy(); // Notify partner they are alone
+                        room.destroy();
 
-                        // Put both back in queue to find new matches
+                        user.videoReady = false;
+                        if (partner) partner.videoReady = false;
+
                         this.users.push(user);
                         if (partner) this.users.push(partner);
                         this.tryCreateRoom();
@@ -77,24 +108,22 @@ export class RoomManager {
         });
     }
 
-    public addUser(user: User): void {
-        this.users.push(user);
+    public addUser(user: Omit<User, 'videoReady'>): void {
+        // Automatically initialize videoReady to false when user connects
+        this.users.push({ ...user, videoReady: false });
         this.addHandler(user.socket);
     }
 
     public removeUser(socket: WebSocket): void {
-        // 1. Remove from waiting queue
         this.users = this.users.filter(u => u.socket !== socket);
-
-        // 2. Remove from active rooms
         const room = this.rooms.find(r => r.containsUser(socket));
         if (room) {
             const partner = room.otherUserBySocket(socket);
             this.rooms = this.rooms.filter(r => r !== room);
             room.destroy();
 
-            // Optional: Put the abandoned partner back in the queue
             if (partner) {
+                partner.videoReady = false;
                 this.users.push(partner);
                 this.tryCreateRoom();
             }
@@ -102,14 +131,12 @@ export class RoomManager {
     }
 
     private tryCreateRoom(): void {
-        // Only match users who have provided a name (INIT completed)
         const eligibleUsers = this.users.filter(u => u.name !== "");
 
         while (eligibleUsers.length >= 2) {
             const u1 = eligibleUsers.shift()!;
             const u2 = eligibleUsers.shift()!;
 
-            // Remove them from the main waiting list
             this.users = this.users.filter(u => u !== u1 && u !== u2);
 
             const newRoom = new Room(u1, u2);
